@@ -1,33 +1,24 @@
 import React, { useCallback, useEffect, useState } from "react";
-import * as bridge from "./bridge.js";
-import { appKey, displayAppName, installCommandRouting } from "./commandRouter.js";
+import * as bridge from "./bridge";
+import type { LogEntry } from "./bridge";
+import { appKey, displayAppName, installCommandRouting } from "./commandRouter";
 
 const PLUGIN_VERSION = "1.0.0";
 
-/**
- * @typedef {{ ts: number, action: string, status: string, summary: string }} LogEntry
- */
-
-/**
- * @param {number} ts
- * @returns {string}
- */
-function formatTime(ts) {
+function formatTime(ts: number): string {
   try {
-    const d = new Date(ts);
-    return d.toLocaleTimeString(undefined, { hour12: false });
-  } catch (e) {
+    return new Date(ts).toLocaleTimeString(undefined, { hour12: false });
+  } catch {
     return "";
   }
 }
 
-export default function App() {
+export default function App(): React.ReactElement {
   const [connected, setConnected] = useState(false);
-  /** @type {[LogEntry[], function]} */
-  const [logs, setLogs] = useState([]);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
   const [rawInput, setRawInput] = useState('{"type":"ping"}');
 
-  const appendLog = useCallback((entry) => {
+  const appendLog = useCallback((entry: LogEntry) => {
     setLogs((prev) => {
       const next = prev.concat([entry]);
       return next.length > 20 ? next.slice(next.length - 20) : next;
@@ -86,7 +77,10 @@ export default function App() {
         <div className="aria-header">
           <div className="aria-title">ARIA Bridge</div>
           <div className="aria-status">
-            <span className={"aria-dot " + (connected ? "aria-dot-on" : "aria-dot-off")} title={connected ? "Connected" : "Disconnected"} />
+            <span
+              className={"aria-dot " + (connected ? "aria-dot-on" : "aria-dot-off")}
+              title={connected ? "Connected" : "Disconnected"}
+            />
             <span>{connected ? "Connected" : "Disconnected"}</span>
           </div>
         </div>
@@ -110,7 +104,12 @@ export default function App() {
             Clear Log
           </button>
           <div className="aria-row">
-            <input className="aria-input" value={rawInput} onChange={(e) => setRawInput(e.target.value)} placeholder='Raw JSON or text' />
+            <input
+              className="aria-input"
+              value={rawInput}
+              onChange={(e) => setRawInput(e.target.value)}
+              placeholder="Raw JSON or text"
+            />
             <button type="button" className="aria-btn" onClick={sendRaw}>
               Send to ARIA
             </button>

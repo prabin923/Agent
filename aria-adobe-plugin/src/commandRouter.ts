@@ -2,11 +2,15 @@
  * Routes WebSocket command payloads to ExtendScript in the active host app.
  */
 
-import premiereScript from "./scripts/premiere.jsx";
-import aeScript from "./scripts/aftereffects.jsx";
-import * as bridge from "./bridge.js";
+import premiereScript from "host-script:premiere";
+import aeScript from "host-script:aftereffects";
+import type { LogEntry, PanelResultPayload, ServerCommand } from "./bridge";
+import * as bridge from "./bridge";
 
-const PREMIERE_ACTIONS = new Set([
+const uxp = require("uxp") as typeof import("uxp");
+const hostName = uxp.host.name;
+
+const PREMIERE_ACTIONS = new Set<string>([
   "cutClipAtTime",
   "trimClip",
   "moveClip",
@@ -26,7 +30,7 @@ const PREMIERE_ACTIONS = new Set([
   "exportSequence",
 ]);
 
-const AE_ACTIONS = new Set([
+const AE_ACTIONS = new Set<string>([
   "createComp",
   "getCompInfo",
   "setCompBackground",
@@ -51,33 +55,25 @@ const AE_ACTIONS = new Set([
   "addToRenderQueue",
 ]);
 
-const uxp = require("uxp");
-const hostName = uxp.host.name;
+export type AppKey = "premiere" | "aftereffects";
 
-/** @type {"premiere" | "aftereffects"} */
-export const appKey = hostName === "PP" ? "premiere" : "aftereffects";
+export const appKey: AppKey = hostName === "PP" ? "premiere" : "aftereffects";
 
-/**
- * @returns {string}
- */
-function displayAppName() {
+export function displayAppName(): string {
   if (hostName === "PP") return "Premiere Pro";
   if (hostName === "AEFT") return "After Effects";
   return hostName || "Adobe";
 }
 
-export { displayAppName };
+type EvalScriptFn = (code: string) => Promise<string>;
 
-/**
- * @returns {(code: string) => Promise<string>}
- */
-function getEvalScript() {
+function getEvalScript(): EvalScriptFn {
   if (hostName === "PP") {
-    const mod = require("premierepro");
+    const mod = require("premierepro") as typeof import("premierepro");
     return (code) => mod.evalScript(code);
   }
   if (hostName === "AEFT") {
-    const mod = require("aftereffects");
+    const mod = require("aftereffects") as typeof import("aftereffects");
     return (code) => mod.evalScript(code);
   }
   throw new Error("ARIA Bridge: unsupported host " + hostName);
@@ -85,38 +81,21 @@ function getEvalScript() {
 
 const evalHostScript = getEvalScript();
 
-/**
- * @param {object} body
- * @returns {object}
- */
-function withSource(body) {
-  return Object.assign({}, body, { sourceApp: appKey });
+type ExtendScriptEnvelope = { status?: string; result?: unknown; message?: string };
+
+function withSource(body: Omit<PanelResultPayload, "sourceApp">): PanelResultPayload {
+  return { ...body, sourceApp: appKey };
 }
 
-/**
- * @param {string} prelude ExtendScript library source
- * @param {string} action
- * @param {object} params
- * @returns {Promise<string>}
- */
-async function runExtendScript(prelude, action, params) {
-  const payload = JSON.stringify({ action: action, params: params || {} });
+async function runExtendScript(prelude: string, action: string, params: Record<string, unknown>): Promise<string> {
+  const payload = JSON.stringify({ action, params: params || {} });
   const escapedPayload = JSON.stringify(payload);
-  const code =
-    prelude +
-    '\n$._ariaBridge.routeFromPanel(' +
-    escapedPayload +
-    ");";
+  const code = prelude + "\n$._ariaBridge.routeFromPanel(" + escapedPayload + ");";
   const raw = await evalHostScript(code);
   return typeof raw === "string" ? raw : String(raw);
 }
 
-/**
- * Execute a server command if it targets this panel's app.
- * @param {{ id: string, app: string, action: string, params?: object }} msg
- * @returns {Promise<{ id: string, status: string, result: any, message: string, sourceApp: string }>}
- */
-export async function handleIncomingCommand(msg) {
+export async function handleIncomingCommand(msg: ServerCommand): Promise<PanelResultPayload> {
   const target = msg.app;
   const action = msg.action;
 
@@ -130,8 +109,7 @@ export async function handleIncomingCommand(msg) {
   }
 
   if (target === "both") {
-    const allowed =
-      appKey === "premiere" ? PREMIERE_ACTIONS.has(action) : AE_ACTIONS.has(action);
+    const allowed = appKey === "premiere" ? PREMIERE_ACTIONS.has(action) : AE_ACTIONS.has(action);
     if (!allowed) {
       return withSource({
         id: msg.id,
@@ -143,26 +121,27 @@ export async function handleIncomingCommand(msg) {
   }
 
   const prelude = appKey === "premiere" ? premiereScript : aeScript;
-  let inner;
+  let inner: string;
   try {
-    inner = await runExtendScript(prelude, msg.action, msg.params || {});
+    inner = await runExtendScript(prelude, msg.action, (msg.params as Record<string, unknown>) || {});
   } catch (e) {
+    const err = e instanceof Error ? e.message : String(e);
     return withSource({
       id: msg.id,
       status: "error",
       result: null,
-      message: e && e.message ? e.message : String(e),
+      message: err,
     });
   }
 
   try {
-    const parsed = JSON.parse(inner);
+    const parsed = JSON.parse(inner) as ExtendScriptEnvelope;
     if (parsed && parsed.status === "error") {
       return withSource({
         id: msg.id,
         status: "error",
         result: null,
-        message: parsed.message || "ExtendScript error",
+        message: String(parsed.message || "ExtendScript error"),
       });
     }
     return withSource({
@@ -171,7 +150,7 @@ export async function handleIncomingCommand(msg) {
       result: parsed && parsed.result !== undefined ? parsed.result : parsed,
       message: parsed && parsed.message ? String(parsed.message) : "",
     });
-  } catch (e) {
+  } catch {
     return withSource({
       id: msg.id,
       status: "error",
@@ -181,29 +160,21 @@ export async function handleIncomingCommand(msg) {
   }
 }
 
-/**
- * @param {(entry: { ts: number, action: string, status: string, summary: string }) => void} onLog
- */
-export function installCommandRouting(onLog) {
+export function installCommandRouting(onLog: (entry: LogEntry) => void): void {
   bridge.setCommandListener(async (msg) => {
     const out = await handleIncomingCommand(msg);
     bridge.sendResult(out);
-    if (onLog) {
-      let summary = "";
-      try {
-        summary =
-          out.status === "success"
-            ? JSON.stringify(out.result).slice(0, 400)
-            : String(out.message || "");
-      } catch (e) {
-        summary = String(e);
-      }
-      onLog({
-        ts: Date.now(),
-        action: msg.action || "",
-        status: out.status,
-        summary,
-      });
+    let summary = "";
+    try {
+      summary = out.status === "success" ? JSON.stringify(out.result).slice(0, 400) : String(out.message || "");
+    } catch (e) {
+      summary = String(e);
     }
+    onLog({
+      ts: Date.now(),
+      action: msg.action || "",
+      status: out.status,
+      summary,
+    });
   });
 }

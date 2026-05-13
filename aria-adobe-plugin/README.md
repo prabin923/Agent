@@ -15,8 +15,11 @@ Local WebSocket bridge between **Premiere Pro** / **After Effects** (UXP panels)
 
    ```bash
    npm install
-   npm run build
+   npm run typecheck   # optional: static TypeScript check
+   npm run build       # esbuild → dist/index.js (~24ms typical)
    ```
+
+   The panel is **TypeScript** (`src/*.ts`, `src/*.tsx`) and builds with **esbuild** (no Webpack/Babel). Use `npm run watch` while iterating.
 
 2. Open **UXP Developer Tool**, choose **Add Plugin**, then select the **`dist`** folder inside `aria-adobe-plugin` (the folder that contains `manifest.json` and `index.html` after the build).
 
@@ -104,9 +107,9 @@ Natural-language prompts your agent might turn into tool calls:
 
 ## Repository layout
 
-- `src/App.jsx` — dark React panel UI, connection dot, command log, manual send field
-- `src/bridge.js` — WebSocket client with 3 s reconnect
-- `src/commandRouter.js` — host detection, `evalScript` orchestration
+- `src/App.tsx` — dark React panel UI (typed)
+- `src/bridge.ts` — WebSocket client with 3 s reconnect
+- `src/commandRouter.ts` — host detection, `evalScript` orchestration
 - `src/scripts/premiere.jsx` / `aftereffects.jsx` — ExtendScript libraries (return JSON strings)
 - `server/bridge_server.py` — FastAPI + `/ws`, `/command`, `/status`
 - `server/adobe_tools.py` — HTTP helpers for the main ARIA agent
