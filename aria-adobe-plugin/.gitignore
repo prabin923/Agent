@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.DS_Store
+server/.venv/
+server/__pycache__/
+server/aria_adobe_logs/

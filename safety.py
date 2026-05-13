@@ -40,7 +40,13 @@ def require_confirmation(action: str, detail: str) -> bool:
 class ActionLogger:
     def __init__(self, log_dir: Path = LOG_DIR) -> None:
         self.log_dir = log_dir
-        self.log_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            # In sandboxed or restricted environments, home may be unwritable.
+            # Fall back to a project-local log directory so the agent can still run.
+            self.log_dir = Path.cwd() / "aria_logs"
+            self.log_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.path = self.log_dir / f"aria_{stamp}.jsonl"
 
