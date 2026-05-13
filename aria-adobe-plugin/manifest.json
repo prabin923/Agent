@@ -20,7 +20,12 @@
   ],
   "requiredPermissions": {
     "network": {
-      "domains": ["http://localhost:7777", "ws://localhost:7777"]
+      "domains": [
+        "http://localhost:7777",
+        "http://127.0.0.1:7777",
+        "ws://localhost:7777",
+        "ws://127.0.0.1:7777"
+      ]
     },
     "localFileSystem": "fullAccess"
   }

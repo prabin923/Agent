@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib.util
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -14,7 +16,7 @@ try:
 except Exception:  # pyobjc is only available after requirements are installed on macOS.
     AXIsProcessTrusted = None
 
-from config import SHELL_TIMEOUT_SECONDS
+from config import ADOBE_BRIDGE_BASE_URL, SHELL_TIMEOUT_SECONDS
 from ollama_client import OllamaClient
 from safety import is_destructive_shell, require_confirmation
 from vision import describe_screen, take_screenshot_base64
@@ -184,6 +186,121 @@ def set_clipboard(text: str) -> ToolResult:
     return _ok(chars=len(text))
 
 
+def _load_adobe_tools_module() -> Any:
+    """Load ``aria-adobe-plugin/server/adobe_tools.py`` when ``httpx`` is installed."""
+
+    try:
+        import httpx  # noqa: F401
+    except ImportError:
+        return None
+
+    if "ARIA_ADOBE_BRIDGE_URL" not in os.environ:
+        os.environ["ARIA_ADOBE_BRIDGE_URL"] = ADOBE_BRIDGE_BASE_URL
+
+    path = Path(__file__).resolve().parent / "aria-adobe-plugin" / "server" / "adobe_tools.py"
+    if not path.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("aria_adobe_tools", path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        return None
+    return module
+
+
+_adobe_mod = _load_adobe_tools_module()
+BRIDGE_TOOLS_ENABLED = _adobe_mod is not None
+_registered_adobe_for_vision: set[str] = set()
+
+
+def _normalize_bridge_response(data: Any) -> ToolResult:
+    if not isinstance(data, dict):
+        return _error("Adobe bridge returned a non-object response", raw=str(data)[:4000])
+    primary = data.get("primary")
+    if primary is None:
+        responses = data.get("responses")
+        if isinstance(responses, list) and responses:
+            primary = responses[0]
+    if not isinstance(primary, dict):
+        return _error("Adobe bridge returned no panel result", envelope=data)
+    if primary.get("status") == "error":
+        return _error(str(primary.get("message") or "Adobe panel error"), panel=primary, envelope=data)
+    return _ok(panel=primary, envelope=data, result=primary.get("result"))
+
+
+def _call_adobe(method: str, *args: Any, **kwargs: Any) -> ToolResult:
+    if _adobe_mod is None:
+        return _error(
+            "Adobe bridge tools are unavailable. Install `httpx` (see requirements.txt), ensure "
+            "`aria-adobe-plugin/server/adobe_tools.py` exists, run `python bridge_server.py` in "
+            "`aria-adobe-plugin/server`, and open the ARIA Bridge panel in Premiere Pro or After Effects."
+        )
+    try:
+        import httpx
+
+        fn = getattr(_adobe_mod, method)
+        payload = fn(*args, **kwargs)
+        return _normalize_bridge_response(payload)
+    except httpx.HTTPStatusError as exc:
+        body = ""
+        try:
+            body = exc.response.text[:4000]
+        except Exception:
+            body = ""
+        return _error(f"Adobe bridge HTTP {exc.response.status_code}", http_body=body)
+    except Exception as exc:
+        return _error(f"{type(exc).__name__}: {exc}")
+
+
+def premiere_cut_clip(sequence_name: str, track_index: int, time_seconds: float) -> ToolResult:
+    return _call_adobe("premiere_cut_clip", sequence_name, track_index, time_seconds)
+
+
+def premiere_apply_effect(
+    sequence_name: str, clip_index: int, track_index: int, effect_name: str
+) -> ToolResult:
+    return _call_adobe("premiere_apply_effect", sequence_name, clip_index, track_index, effect_name)
+
+
+def premiere_export(sequence_name: str, output_path: str, preset_name: str) -> ToolResult:
+    return _call_adobe("premiere_export", sequence_name, output_path, preset_name)
+
+
+def premiere_get_timeline(sequence_name: str | None = None) -> ToolResult:
+    return _call_adobe("premiere_get_timeline", sequence_name)
+
+
+def premiere_add_marker(sequence_name: str, time_seconds: float, label: str) -> ToolResult:
+    return _call_adobe("premiere_add_marker", sequence_name, time_seconds, label)
+
+
+def ae_create_comp(name: str, width: int, height: int, fps: float, duration: float) -> ToolResult:
+    return _call_adobe("ae_create_comp", name, width, height, fps, duration)
+
+
+def ae_add_text(comp_name: str, text: str, font_size: int, x: float, y: float) -> ToolResult:
+    return _call_adobe("ae_add_text", comp_name, text, font_size, x, y)
+
+
+def ae_add_keyframe(comp_name: str, layer_name: str, property_path: str, time: float, value: Any) -> ToolResult:
+    return _call_adobe("ae_add_keyframe", comp_name, layer_name, property_path, time, value)
+
+
+def ae_apply_effect(comp_name: str, layer_name: str, effect_match_name: str) -> ToolResult:
+    return _call_adobe("ae_apply_effect", comp_name, layer_name, effect_match_name)
+
+
+def ae_render(comp_name: str, output_path: str) -> ToolResult:
+    return _call_adobe("ae_render", comp_name, output_path)
+
+
+def ae_get_comp_info(comp_name: str) -> ToolResult:
+    return _call_adobe("ae_get_comp_info", comp_name)
+
+
 TOOLS: dict[str, Callable[..., ToolResult]] = {
     "run_shell": run_shell,
     "open_app": open_app,
@@ -203,6 +320,23 @@ TOOLS: dict[str, Callable[..., ToolResult]] = {
     "get_clipboard": get_clipboard,
     "set_clipboard": set_clipboard,
 }
+
+if _adobe_mod is not None:
+    _adobe_tool_entries: dict[str, Callable[..., ToolResult]] = {
+        "premiere_cut_clip": premiere_cut_clip,
+        "premiere_apply_effect": premiere_apply_effect,
+        "premiere_export": premiere_export,
+        "premiere_get_timeline": premiere_get_timeline,
+        "premiere_add_marker": premiere_add_marker,
+        "ae_create_comp": ae_create_comp,
+        "ae_add_text": ae_add_text,
+        "ae_add_keyframe": ae_add_keyframe,
+        "ae_apply_effect": ae_apply_effect,
+        "ae_render": ae_render,
+        "ae_get_comp_info": ae_get_comp_info,
+    }
+    TOOLS.update(_adobe_tool_entries)
+    _registered_adobe_for_vision.update(_adobe_tool_entries.keys())
 
 
 TOOL_SPECS = [
@@ -224,3 +358,83 @@ TOOL_SPECS = [
     {"name": "get_clipboard", "description": "Return current clipboard text.", "params": {}},
     {"name": "set_clipboard", "description": "Set clipboard text.", "params": {"text": "str"}},
 ]
+
+if _adobe_mod is not None:
+    TOOL_SPECS.extend(
+        [
+            {
+                "name": "premiere_cut_clip",
+                "description": "Premiere: razor/split a video track at time (seconds). Requires ARIA Bridge + panel. Indices are 0-based.",
+                "params": {"sequence_name": "str", "track_index": "int", "time_seconds": "float"},
+            },
+            {
+                "name": "premiere_apply_effect",
+                "description": "Premiere: add an effect to a clip by match name. Requires ARIA Bridge + panel.",
+                "params": {
+                    "sequence_name": "str",
+                    "clip_index": "int",
+                    "track_index": "int",
+                    "effect_name": "str",
+                },
+            },
+            {
+                "name": "premiere_export",
+                "description": "Premiere: export a sequence via exportAsMediaDirect. Requires ARIA Bridge + panel.",
+                "params": {"sequence_name": "str", "output_path": "str", "preset_name": "str"},
+            },
+            {
+                "name": "premiere_get_timeline",
+                "description": "Premiere: return sequence JSON (clips/tracks). Omit sequence_name to use the active sequence.",
+                "params": {"sequence_name": "str|null"},
+            },
+            {
+                "name": "premiere_add_marker",
+                "description": "Premiere: add a sequence marker at a time in seconds.",
+                "params": {"sequence_name": "str", "time_seconds": "float", "label": "str"},
+            },
+            {
+                "name": "ae_create_comp",
+                "description": "After Effects: create a composition (duration in seconds, fps as float).",
+                "params": {"name": "str", "width": "int", "height": "int", "fps": "float", "duration": "float"},
+            },
+            {
+                "name": "ae_add_text",
+                "description": "After Effects: add a white text layer at (x,y).",
+                "params": {"comp_name": "str", "text": "str", "font_size": "int", "x": "float", "y": "float"},
+            },
+            {
+                "name": "ae_add_keyframe",
+                "description": "After Effects: set a keyframe on a layer property path (e.g. Transform.Opacity).",
+                "params": {
+                    "comp_name": "str",
+                    "layer_name": "str",
+                    "property_path": "str",
+                    "time": "float",
+                    "value": "any",
+                },
+            },
+            {
+                "name": "ae_apply_effect",
+                "description": "After Effects: add an effect by match name to a layer.",
+                "params": {"comp_name": "str", "layer_name": "str", "effect_match_name": "str"},
+            },
+            {
+                "name": "ae_render",
+                "description": "After Effects: enqueue comp to render queue and start rendering (blocking).",
+                "params": {"comp_name": "str", "output_path": "str"},
+            },
+            {
+                "name": "ae_get_comp_info",
+                "description": "After Effects: return comp JSON (layers, duration, settings).",
+                "params": {"comp_name": "str"},
+            },
+        ]
+    )
+
+
+def should_skip_vision_verify(tool_name: str) -> bool:
+    """GUI vision checks are misleading for headless Adobe bridge calls."""
+
+    if tool_name in {"take_screenshot", "read_screen"}:
+        return True
+    return tool_name in _registered_adobe_for_vision

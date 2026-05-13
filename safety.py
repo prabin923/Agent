@@ -56,5 +56,14 @@ class ActionLogger:
             "event": event,
             **payload,
         }
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        line = json.dumps(record, ensure_ascii=False, default=str) + "\n"
+        try:
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(line)
+        except PermissionError:
+            # Home log dir may exist but be unwritable (e.g. sandbox); mirror __init__ fallback.
+            self.log_dir = Path.cwd() / "aria_logs"
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+            self.path = self.log_dir / self.path.name
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(line)

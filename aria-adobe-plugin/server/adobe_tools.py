@@ -1,23 +1,29 @@
 """
 HTTP helpers for the main ARIA agent to drive Adobe apps through the bridge server.
 
-Each function POSTs to http://127.0.0.1:7777/command and returns the JSON body.
+Each function POSTs to ``{ARIA_ADOBE_BRIDGE_URL or http://127.0.0.1:7777}/command``
+and returns the JSON body.
 """
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import httpx
 
-COMMAND_URL = "http://127.0.0.1:7777/command"
 DEFAULT_TIMEOUT = 30.0
+
+
+def _command_url() -> str:
+    base = os.environ.get("ARIA_ADOBE_BRIDGE_URL", "http://127.0.0.1:7777").rstrip("/")
+    return f"{base}/command"
 
 
 def _post(app: str, action: str, params: dict[str, Any]) -> dict[str, Any]:
     payload = {"app": app, "action": action, "params": params}
     with httpx.Client(timeout=DEFAULT_TIMEOUT) as client:
-        response = client.post(COMMAND_URL, json=payload)
+        response = client.post(_command_url(), json=payload)
         response.raise_for_status()
         return response.json()
 

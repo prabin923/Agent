@@ -44,6 +44,25 @@ class PendingCommand:
 
 app = FastAPI(title="ARIA Adobe Bridge", version="1.0.0")
 
+SERVICE_NAME = "ARIA Adobe Bridge"
+
+
+@app.get("/")
+async def health() -> dict[str, Any]:
+    """Liveness probe and quick status for operators and the main ARIA agent."""
+
+    snap = await status()
+    return {
+        "service": SERVICE_NAME,
+        "version": "1.0.0",
+        "ok": True,
+        "websocket_path": "/ws",
+        "command_path": "/command",
+        "status_path": "/status",
+        "connections": snap,
+    }
+
+
 clients: list[dict[str, Any]] = []
 clients_lock = asyncio.Lock()
 pending: dict[str, PendingCommand] = {}

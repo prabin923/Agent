@@ -9,7 +9,7 @@ from typing import Any
 from config import MAX_TOOL_CALLS, MAX_VERIFY_RETRIES, PLANNER_MODEL
 from ollama_client import OllamaClient
 from safety import ActionLogger
-from tools import TOOLS, TOOL_SPECS
+from tools import BRIDGE_TOOLS_ENABLED, TOOLS, TOOL_SPECS, should_skip_vision_verify
 from vision import verify_action
 
 
@@ -69,8 +69,15 @@ class AriaAgent:
             }
             prompt = json.dumps(planner_payload, ensure_ascii=False)
 
+            system_prompt = PLANNER_SYSTEM_PROMPT
+            if BRIDGE_TOOLS_ENABLED:
+                system_prompt += (
+                    "\n- Adobe Premiere/After Effects tools (premiere_* / ae_*) require the local ARIA Adobe Bridge "
+                    "on port 7777 and the ARIA Bridge UXP panel connected in the target app."
+                )
+
             try:
-                raw = self.client.generate(PLANNER_MODEL, prompt, system=PLANNER_SYSTEM_PROMPT)
+                raw = self.client.generate(PLANNER_MODEL, prompt, system=system_prompt)
                 decision = _extract_json(raw)
             except Exception as exc:
                 failures += 1
@@ -111,7 +118,7 @@ class AriaAgent:
                 result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
             verification = None
-            if tool_name not in {"take_screenshot", "read_screen"}:
+            if not should_skip_vision_verify(tool_name):
                 try:
                     action = _format_tool_call(tool_name, args)
                     verification = verify_action(goal, action, json.dumps(result, default=str), self.client)
